@@ -50,9 +50,9 @@ type mcpToolProperty struct {
 
 // mcpToolSchema is a tool's inputSchema: always type object.
 type mcpToolSchema struct {
-	Type       string                       `json:"type"`
-	Properties map[string]mcpToolProperty   `json:"properties"`
-	Required   []string                     `json:"required,omitempty"`
+	Type       string                     `json:"type"`
+	Properties map[string]mcpToolProperty `json:"properties"`
+	Required   []string                   `json:"required,omitempty"`
 }
 
 // mcpTool is one entry of the tools/list answer. The slice order in
@@ -398,8 +398,8 @@ func (s *Store) mcpInitialize(w http.ResponseWriter, r *http.Request, req mcpReq
 // result with isError:true.
 func (s *Store) mcpCallTool(w http.ResponseWriter, r *http.Request, req mcpRequest) {
 	var params struct {
-		Name      string         `json:"name"`
-		Arguments mcpArgs        `json:"arguments"`
+		Name      string  `json:"name"`
+		Arguments mcpArgs `json:"arguments"`
 	}
 	if len(req.Params) > 0 {
 		_ = json.Unmarshal(req.Params, &params)

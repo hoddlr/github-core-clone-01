@@ -1033,6 +1033,7 @@ func issueJSON(s *Store, repo *Repo, issue *Issue) map[string]any {
 		}
 	}
 	return map[string]any{
+		"id":         repo.ID*1000000 + issue.Number,
 		"number":     issue.Number,
 		"title":      issue.Title,
 		"body":       issue.Body,
@@ -1261,6 +1262,7 @@ func pullJSON(repo *Repo, pr *PullRequest) map[string]any {
 		mergeSHA = pr.MergeSHA
 	}
 	return map[string]any{
+		"id":               repo.ID*1000000 + pr.Number,
 		"number":           pr.Number,
 		"state":            pr.State,
 		"title":            pr.Title,
