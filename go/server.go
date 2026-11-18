@@ -116,6 +116,13 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// GraphQL v4 (M3): POST /api/graphql, single operation or a JSON
+	// array of operations.
+	if path == "/api/graphql" {
+		s.handleGraphQL(w, r)
+		return
+	}
+
 	s.writeError(w, http.StatusNotFound, "Not Found")
 }
 
