@@ -78,6 +78,7 @@ type Store struct {
 	trialSeed string
 
 	repos      map[string]*Repo // by repository name (owner is always the viewer)
+	rest       map[string]*RepoRest // REST state (labels, issues, pulls) by repository name
 	nextRepoID int64
 	reqCount   uint64
 }
@@ -89,6 +90,7 @@ func NewStore(token, trialNow, trialSeed string) *Store {
 		trialNow:   trialNow,
 		trialSeed:  trialSeed,
 		repos:      map[string]*Repo{},
+		rest:       map[string]*RepoRest{},
 		nextRepoID: 1,
 	}
 }
@@ -216,4 +218,83 @@ func repoJSON(r *Repo) map[string]any {
 		"updated_at":     r.UpdatedAt,
 		"pushed_at":      r.UpdatedAt,
 	}
+}
+
+// -------------------------------------------------------------------------------------------
+// REST v3 state (M2)
+// -------------------------------------------------------------------------------------------
+
+// Label is one repository label, created through POST /labels.
+type Label struct {
+	Name        string
+	Color       string
+	Description string
+}
+
+// IssueComment is one comment on an issue.
+type IssueComment struct {
+	ID        int64
+	Body      string
+	User      string
+	CreatedAt string
+	UpdatedAt string
+}
+
+// Issue is one issue: its number comes from the repository's shared
+// issue/pull counter, in creation order.
+type Issue struct {
+	Number    int64
+	Title     string
+	Body      string
+	State     string // "open" or "closed"
+	Labels    []string
+	Comments  []*IssueComment
+	CreatedAt string
+	UpdatedAt string
+}
+
+// PullRequest is one pull request. HeadSHA/BaseSHA are the branch tips at
+// creation; MergeSHA is set by the merge that closes it.
+type PullRequest struct {
+	Number    int64
+	Title     string
+	Body      string
+	State     string // "open" or "closed"
+	HeadRef   string
+	BaseRef   string
+	HeadSHA   string
+	BaseSHA   string
+	Merged    bool
+	MergedAt  string
+	MergeSHA  string
+	CreatedAt string
+	UpdatedAt string
+}
+
+// RepoRest is a repository's REST-only state: labels, issues and pull
+// requests, plus the shared number counter and the comment id counter.
+type RepoRest struct {
+	Labels        map[string]*Label
+	Issues        []*Issue
+	Pulls         []*PullRequest
+	NextNumber    int64
+	NextCommentID int64
+}
+
+// restForLocked returns the REST state for a repository, creating it on
+// first use. The caller must hold s.mu: it is the same lock the git paths
+// use, so REST and git never interleave a repository's state.
+func (s *Store) restForLocked(repo *Repo) *RepoRest {
+	rr, ok := s.rest[repo.Name]
+	if !ok {
+		rr = &RepoRest{
+			Labels:        map[string]*Label{},
+			Issues:        []*Issue{},
+			Pulls:         []*PullRequest{},
+			NextNumber:    1,
+			NextCommentID: 1,
+		}
+		s.rest[repo.Name] = rr
+	}
+	return rr
 }

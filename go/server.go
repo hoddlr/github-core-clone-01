@@ -109,6 +109,13 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Everything else under /api/v3/ is the REST v3 surface (M2: repos,
+	// issues, pulls, contents, labels, git refs).
+	if strings.HasPrefix(path, "/api/v3/") {
+		s.handleRest(w, r)
+		return
+	}
+
 	s.writeError(w, http.StatusNotFound, "Not Found")
 }
 
