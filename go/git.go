@@ -217,7 +217,39 @@ func (r *Repo) fetchSendSet(wants, haves []string, depth int, clientShallow []st
 			return nil, nil, nil, fmt.Errorf("want %s is not in the repository", want)
 		}
 	}
-	haveClosure := closureOf(haves, lookup)
+	// What the client already holds. A have that is one of the client's
+	// shallow boundaries holds ONLY itself and its tree: its ancestry was
+	// cut off by the shallow clone, so the ancestors are NOT held (a plain
+	// reachability closure of the have would wrongly exclude them from the
+	// send set — that is what broke deepen). Any other have is a tip of a
+	// complete history, so its full closure is held.
+	held := map[string]bool{}
+	shallowSet := map[string]bool{}
+	for _, s := range clientShallow {
+		shallowSet[s] = true
+	}
+	for _, h := range haves {
+		obj := lookup(h)
+		if obj == nil {
+			continue
+		}
+		if shallowSet[h] && obj.Type == objCommit {
+			held[h] = true
+			if tree, _, err := ParseCommit(obj.Data); err == nil {
+				for sub := range treeClosure(tree, lookup) {
+					held[sub] = true
+				}
+			}
+		} else if shallowSet[h] && obj.Type == objTree {
+			for sub := range treeClosure(h, lookup) {
+				held[sub] = true
+			}
+		} else {
+			for oid := range closureOf([]string{h}, lookup) {
+				held[oid] = true
+			}
+		}
+	}
 
 	// BFS over commits from the wants; dist counts parent edges from a want.
 	dist := map[string]int{}
@@ -302,7 +334,7 @@ func (r *Repo) fetchSendSet(wants, haves []string, depth int, clientShallow []st
 
 	send := map[string]*Object{}
 	for oid := range included {
-		if haveClosure[oid] {
+		if held[oid] {
 			continue
 		}
 		if obj := lookup(oid); obj != nil {
@@ -313,7 +345,7 @@ func (r *Repo) fetchSendSet(wants, haves []string, depth int, clientShallow []st
 	var shallow, unshallow []string
 	if depth > 0 {
 		for oid, d := range dist {
-			if d != depth-1 || haveClosure[oid] {
+			if d != depth-1 || held[oid] {
 				continue
 			}
 			obj := lookup(oid)
@@ -374,13 +406,25 @@ func writeSidebandPack(buf *bytes.Buffer, pack []byte) {
 // The acknowledgments section is sent only when the client sent haves:
 // with no haves there is nothing to acknowledge, and real git expects the
 // packfile section straight away (protocol-v2: the acknowledgment section
-// is omitted when the request carries no 'have' lines).
-func (s *Store) fetchV2Response(w http.ResponseWriter, send map[string]*Object, shallow, unshallow []string, depth int, withAck bool) {
+// is omitted when the request carries no 'have' lines). When haves are
+// present the server ACKs the ones it holds and sends `ready`: a NAK with
+// no `ready` tells real git that no further section may follow, which would
+// forbid the shallow-info section a deepen needs. Sections are separated by
+// delim (0001), as real git's upload-pack does; the packfile section ends
+// with a flush.
+func (s *Store) fetchV2Response(w http.ResponseWriter, send map[string]*Object, shallow, unshallow []string, depth int, withAck bool, acks []string) {
 	var buf bytes.Buffer
 	if withAck {
 		buf.Write(pktLine([]byte("acknowledgments\n")))
-		buf.Write(pktLine([]byte("NAK\n")))
-		buf.Write(pktFlush())
+		if len(acks) == 0 {
+			buf.Write(pktLine([]byte("NAK\n")))
+		} else {
+			for _, oid := range acks {
+				buf.Write(pktLine([]byte("ACK " + oid + "\n")))
+			}
+			buf.Write(pktLine([]byte("ready\n")))
+		}
+		buf.Write(pktDelim())
 	}
 	if depth > 0 {
 		buf.Write(pktLine([]byte("shallow-info\n")))
@@ -390,7 +434,7 @@ func (s *Store) fetchV2Response(w http.ResponseWriter, send map[string]*Object, 
 		for _, oid := range unshallow {
 			buf.Write(pktLine([]byte("unshallow " + oid + "\n")))
 		}
-		buf.Write(pktFlush())
+		buf.Write(pktDelim())
 	}
 	buf.Write(pktLine([]byte("packfile\n")))
 	writeSidebandPack(&buf, WritePack(send))
@@ -408,7 +452,7 @@ func (s *Store) fetchV2Error(w http.ResponseWriter, msg string) {
 	var buf bytes.Buffer
 	buf.Write(pktLine([]byte("acknowledgments\n")))
 	buf.Write(pktLine([]byte("NAK\n")))
-	buf.Write(pktFlush())
+	buf.Write(pktDelim())
 	buf.Write(pktLine([]byte("packfile\n")))
 	payload := append([]byte{3}, []byte(msg+"\n")...)
 	buf.Write(pktLine(payload))
@@ -521,7 +565,13 @@ func (s *Store) handleUploadPack(w http.ResponseWriter, r *http.Request, repo *R
 				s.fetchV2Error(w, err.Error())
 				return
 			}
-			s.fetchV2Response(w, send, newShallow, unshallow, depth, len(haves) > 0)
+			var acks []string
+			for _, have := range haves {
+				if repo.LookupObject(have) != nil {
+					acks = append(acks, have)
+				}
+			}
+			s.fetchV2Response(w, send, newShallow, unshallow, depth, len(haves) > 0, acks)
 			return
 		default:
 			s.writeError(w, http.StatusBadRequest, "unknown command")
