@@ -123,6 +123,12 @@ func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// MCP (M4): POST /mcp, JSON-RPC 2.0 Streamable HTTP.
+	if path == "/mcp" {
+		s.handleMCP(w, r)
+		return
+	}
+
 	s.writeError(w, http.StatusNotFound, "Not Found")
 }
 
