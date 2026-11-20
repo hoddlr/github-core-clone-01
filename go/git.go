@@ -387,6 +387,35 @@ func (r *Repo) fetchSendSet(wants, haves []string, depth int, clientShallow []st
 	return send, shallow, unshallow, nil
 }
 
+// packFor reuses the most recent deterministic pack when a fetch asks for the
+// same object set again. Git objects are immutable by their content-addressed
+// id, so the sorted OID list fully identifies the encoded pack.
+func (r *Repo) packFor(objs map[string]*Object) []byte {
+	r.packMu.Lock()
+	defer r.packMu.Unlock()
+	if len(objs) == len(r.packOIDs) && r.packData != nil {
+		equal := true
+		for _, oid := range r.packOIDs {
+			if objs[oid] == nil {
+				equal = false
+				break
+			}
+		}
+		if equal {
+			return r.packData
+		}
+	}
+	oids := make([]string, 0, len(objs))
+	for oid := range objs {
+		oids = append(oids, oid)
+	}
+	sort.Strings(oids)
+	pack := writePackSorted(objs, oids)
+	r.packOIDs = oids
+	r.packData = pack
+	return pack
+}
+
 // writeSidebandPack appends a pack to buf as sideband band-1 packets.
 func writeSidebandPack(buf *bytes.Buffer, pack []byte) {
 	const chunk = 32768
@@ -412,7 +441,7 @@ func writeSidebandPack(buf *bytes.Buffer, pack []byte) {
 // forbid the shallow-info section a deepen needs. Sections are separated by
 // delim (0001), as real git's upload-pack does; the packfile section ends
 // with a flush.
-func (s *Store) fetchV2Response(w http.ResponseWriter, send map[string]*Object, shallow, unshallow []string, depth int, withAck bool, acks []string) {
+func (s *Store) fetchV2Response(w http.ResponseWriter, send map[string]*Object, pack []byte, shallow, unshallow []string, depth int, withAck bool, acks []string) {
 	var buf bytes.Buffer
 	if withAck {
 		buf.Write(pktLine([]byte("acknowledgments\n")))
@@ -437,7 +466,7 @@ func (s *Store) fetchV2Response(w http.ResponseWriter, send map[string]*Object, 
 		buf.Write(pktDelim())
 	}
 	buf.Write(pktLine([]byte("packfile\n")))
-	writeSidebandPack(&buf, WritePack(send))
+	writeSidebandPack(&buf, pack)
 	buf.Write(pktFlush())
 	body := buf.Bytes()
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
@@ -467,7 +496,7 @@ func (s *Store) fetchV2Error(w http.ResponseWriter, msg string) {
 
 // fetchV0Response writes a protocol v0 fetch response: NAK, shallow lines,
 // then the pack as sideband packets.
-func (s *Store) fetchV0Response(w http.ResponseWriter, send map[string]*Object, shallow, unshallow []string) {
+func (s *Store) fetchV0Response(w http.ResponseWriter, pack []byte, shallow, unshallow []string) {
 	var buf bytes.Buffer
 	buf.Write(pktLine([]byte("NAK\n")))
 	for _, oid := range shallow {
@@ -476,7 +505,7 @@ func (s *Store) fetchV0Response(w http.ResponseWriter, send map[string]*Object, 
 	for _, oid := range unshallow {
 		buf.Write(pktLine([]byte("unshallow " + oid + "\n")))
 	}
-	writeSidebandPack(&buf, WritePack(send))
+	writeSidebandPack(&buf, pack)
 	buf.Write(pktFlush())
 	body := buf.Bytes()
 	w.Header().Set("Content-Type", "application/x-git-upload-pack-result")
@@ -571,7 +600,7 @@ func (s *Store) handleUploadPack(w http.ResponseWriter, r *http.Request, repo *R
 					acks = append(acks, have)
 				}
 			}
-			s.fetchV2Response(w, send, newShallow, unshallow, depth, len(haves) > 0, acks)
+			s.fetchV2Response(w, send, repo.packFor(send), newShallow, unshallow, depth, len(haves) > 0, acks)
 			return
 		default:
 			s.writeError(w, http.StatusBadRequest, "unknown command")
@@ -628,10 +657,10 @@ func (s *Store) handleUploadPack(w http.ResponseWriter, r *http.Request, repo *R
 	if err != nil {
 		// v0 has no band-3 channel the client tolerates here; answer NAK with
 		// an empty pack so the exchange stays framed.
-		s.fetchV0Response(w, map[string]*Object{}, nil, nil)
+		s.fetchV0Response(w, repo.packFor(nil), nil, nil)
 		return
 	}
-	s.fetchV0Response(w, send, newShallow, unshallow)
+	s.fetchV0Response(w, repo.packFor(send), newShallow, unshallow)
 }
 
 // -------------------------------------------------------------------------------------------

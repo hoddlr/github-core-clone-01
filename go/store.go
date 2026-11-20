@@ -48,6 +48,10 @@ type Repo struct {
 
 	Refs    map[string]string  // ref name -> object id (hex)
 	Objects map[string]*Object // object id (hex) -> object
+
+	packMu   sync.Mutex
+	packOIDs []string
+	packData []byte
 }
 
 // SortedRefNames returns the ref names in byte order.
@@ -77,7 +81,7 @@ type Store struct {
 	trialNow  string
 	trialSeed string
 
-	repos      map[string]*Repo // by repository name (owner is always the viewer)
+	repos      map[string]*Repo     // by repository name (owner is always the viewer)
 	rest       map[string]*RepoRest // REST state (labels, issues, pulls) by repository name
 	nextRepoID int64
 	reqCount   uint64

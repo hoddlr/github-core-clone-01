@@ -718,7 +718,16 @@ func WritePack(objs map[string]*Object) []byte {
 		oids = append(oids, oid)
 	}
 	sort.Strings(oids)
+	return writePackSorted(objs, oids)
+}
+
+func writePackSorted(objs map[string]*Object, oids []string) []byte {
+	capacity := 12 + len(objs)*20
+	for _, oid := range oids {
+		capacity += len(objs[oid].Data)
+	}
 	var body bytes.Buffer
+	body.Grow(capacity)
 	head := make([]byte, 12)
 	copy(head[0:4], "PACK")
 	head[4], head[5], head[6], head[7] = 0, 0, 0, 2
@@ -727,10 +736,17 @@ func WritePack(objs map[string]*Object) []byte {
 	head[10] = byte(len(oids) >> 8)
 	head[11] = byte(len(oids))
 	body.Write(head)
+	var compressor *zlib.Writer
 	for _, oid := range oids {
 		obj := objs[oid]
 		body.Write(writePackObjectHeader(obj.Type, len(obj.Data)))
-		body.Write(deflate(obj.Data))
+		if compressor == nil {
+			compressor, _ = zlib.NewWriterLevel(&body, zlib.BestSpeed)
+		} else {
+			compressor.Reset(&body)
+		}
+		compressor.Write(obj.Data)
+		compressor.Close()
 	}
 	sum := sha1.Sum(body.Bytes())
 	body.Write(sum[:])
